@@ -1,12 +1,52 @@
 import { useEffect, useState } from "react";
 
-const STORAGE_KEY = "muscle-log";
+const STORAGE_KEY = "muscle-log-v2";
+const MAX_IMAGE_SIZE = 1200;
+const JPEG_QUALITY = 0.82;
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function compressImage(file) {
+  const dataUrl = await readFileAsDataURL(file);
+  const img = await loadImage(dataUrl);
+
+  const ratio = Math.min(MAX_IMAGE_SIZE / img.width, MAX_IMAGE_SIZE / img.height, 1);
+  const width = Math.round(img.width * ratio);
+  const height = Math.round(img.height * ratio);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, width, height);
+
+  return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+}
 
 export default function App() {
   const [ideal, setIdeal] = useState(null);
   const [photo, setPhoto] = useState(null);
   const [note, setNote] = useState("");
   const [logs, setLogs] = useState([]);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [isSavingImage, setIsSavingImage] = useState(false);
 
   useEffect(() => {
     try {
@@ -16,24 +56,37 @@ export default function App() {
         setLogs(Array.isArray(saved.logs) ? saved.logs : []);
       }
     } catch (e) {
-      console.error("保存データの読み込みに失敗しました", e);
+      console.error(e);
+      setErrorMessage("保存データの読み込みに失敗しました。");
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ ideal, logs })
-    );
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ideal, logs }));
+      setErrorMessage("");
+    } catch (e) {
+      console.error(e);
+      setErrorMessage("画像が大きすぎて保存できませんでした。枚数を減らすか、画像を入れ直してください。");
+    }
   }, [ideal, logs]);
 
-  const handleImage = (e, setter) => {
+  const handleImage = async (e, setter) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => setter(reader.result);
-    reader.readAsDataURL(file);
+    try {
+      setIsSavingImage(true);
+      setErrorMessage("");
+      const compressed = await compressImage(file);
+      setter(compressed);
+    } catch (e) {
+      console.error(e);
+      setErrorMessage("画像の読み込みに失敗しました。");
+    } finally {
+      setIsSavingImage(false);
+      e.target.value = "";
+    }
   };
 
   const saveLog = () => {
@@ -42,11 +95,12 @@ export default function App() {
       return;
     }
 
+    const now = new Date();
     const newLog = {
-      id: Date.now(),
+      id: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
       photo,
       note,
-      date: new Date().toLocaleDateString(),
+      createdAt: now.toISOString(),
     };
 
     setLogs((prevLogs) => [newLog, ...prevLogs]);
@@ -56,6 +110,18 @@ export default function App() {
 
   const deleteLog = (id) => {
     setLogs((prevLogs) => prevLogs.filter((log) => log.id !== id));
+  };
+
+  const formatDate = (iso) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(d);
   };
 
   return (
@@ -69,6 +135,21 @@ export default function App() {
       }}
     >
       <h1>筋トレログ</h1>
+
+      {errorMessage && (
+        <div
+          style={{
+            background: "#fff4f4",
+            color: "#b00020",
+            border: "1px solid #f0caca",
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 16,
+          }}
+        >
+          {errorMessage}
+        </div>
+      )}
 
       <section style={{ marginBottom: 32 }}>
         <h2>理想の姿</h2>
@@ -121,13 +202,14 @@ export default function App() {
         </div>
         <button
           onClick={saveLog}
+          disabled={isSavingImage}
           style={{
             marginTop: 12,
             padding: "10px 16px",
-            cursor: "pointer",
+            cursor: isSavingImage ? "not-allowed" : "pointer",
           }}
         >
-          保存
+          {isSavingImage ? "画像処理中..." : "保存"}
         </button>
       </section>
 
@@ -148,7 +230,7 @@ export default function App() {
               >
                 <img
                   src={log.photo}
-                  alt={log.date}
+                  alt={log.createdAt}
                   style={{
                     width: 160,
                     maxWidth: "100%",
@@ -157,7 +239,7 @@ export default function App() {
                     borderRadius: 8,
                   }}
                 />
-                <div><strong>{log.date}</strong></div>
+                <div><strong>{formatDate(log.createdAt)}</strong></div>
                 <div style={{ margin: "8px 0" }}>{log.note || "メモなし"}</div>
                 <button
                   onClick={() => deleteLog(log.id)}
